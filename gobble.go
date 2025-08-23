@@ -201,7 +201,6 @@ func prepareOutputFile(fileName string, fileSize int) {
 
 	// Guarantee the downloaded file has the correct size upfront and makes parallel writes safe.
 	out.Truncate(int64(fileSize))
-	return
 }
 
 func main() {
