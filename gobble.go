@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -12,7 +13,7 @@ import (
 )
 
 const (
-	defaultParallelism  = 10
+	defaultParallelism  = 50
 	contentLengthHeader = "Content-Length"
 	rangeHeader         = "Range"
 	acceptRangesHeader  = "Accept-Ranges"
@@ -47,6 +48,61 @@ func NewProgressTracker(totalSize int64) *ProgressTracker {
 
 	go pt.Run()
 	return pt
+}
+
+func detectMaxConnections(url string) int {
+	low, high := 1, defaultParallelism
+	maxConns := 1
+
+	for low <= high {
+		mid := low + (high-low)/2
+		ok := testParallelRequest(url, mid)
+
+		if ok {
+			maxConns = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+
+	fmt.Println("Max prallel connections supported:", maxConns)
+	return maxConns
+}
+
+func testParallelRequest(url string, maxConns int) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	wg := sync.WaitGroup{}
+	wg.Add(maxConns)
+
+	errChan := make(chan error, maxConns)
+	for i := 0; i < maxConns; i++ {
+		go func(i int) {
+			defer wg.Done()
+
+			start := int64(i * 100)
+			end := start + 99
+
+			req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+			resp, err := http.DefaultClient.Do(req)
+			if resp != nil {
+				defer resp.Body.Close()
+			}
+
+			if err != nil || resp.StatusCode != http.StatusPartialContent {
+				fmt.Println(err)
+				errChan <- fmt.Errorf("fail")
+			}
+			resp.Body.Close()
+		}(i)
+	}
+
+	wg.Wait()
+	close(errChan)
+	return len(errChan) == 0
 }
 
 func downloadPart(url string, output string, job DownloadJob, wg *sync.WaitGroup, tracker *ProgressTracker) {
@@ -179,7 +235,7 @@ func getStats(url string) FileStats {
 
 	if resp.Header.Get(acceptRangesHeader) == "bytes" {
 		isParallelSupported = true
-		maxParallelism = defaultParallelism // TODO
+		maxParallelism = detectMaxConnections(url)
 	}
 
 	fileSize, _ = strconv.Atoi(resp.Header.Get(contentLengthHeader))
@@ -204,9 +260,7 @@ func prepareOutputFile(fileName string, fileSize int) {
 }
 
 func main() {
-	// Defining available input params
 	url := flag.String("url", "", "URL to download")
-	// parallelism := flag.Int("parallelism", 0, "# parallel download threads")
 	flag.Parse()
 
 	if *url == "" {

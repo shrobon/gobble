@@ -16,7 +16,9 @@ Think of it as a smarter version of `wget` or `curl` designed for modern high-ba
 
 
 ### Run
-
+```
+go run . -url http://speedtest.newark.linode.com/1GB-newark.bin
+```
 
 ---
 
