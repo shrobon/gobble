@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	defaultParallelism  = 50
+	defaultParallelism  = 16
 	contentLengthHeader = "Content-Length"
 	rangeHeader         = "Range"
 	acceptRangesHeader  = "Accept-Ranges"
@@ -56,7 +56,16 @@ func detectMaxConnections(url string) int {
 
 	for low <= high {
 		mid := low + (high-low)/2
-		ok := testParallelRequest(url, mid)
+		fmt.Printf("🔍 Testing %d connections...\n", mid)
+
+		ok, rateLimited := testParallelRequest(url, mid)
+
+		if rateLimited {
+			fmt.Println("⚠️ Rate-limited (429). Backing off...")
+			time.Sleep(10 * time.Second)
+			high = mid - 1
+			continue
+		}
 
 		if ok {
 			maxConns = mid
@@ -66,18 +75,18 @@ func detectMaxConnections(url string) int {
 		}
 	}
 
-	fmt.Println("Max prallel connections supported:", maxConns)
+	fmt.Printf("✅ Max safe parallel connections: %d\n", maxConns)
 	return maxConns
 }
 
-func testParallelRequest(url string, maxConns int) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+func testParallelRequest(url string, maxConns int) (ok bool, rateLimited bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	wg := sync.WaitGroup{}
 	wg.Add(maxConns)
 
-	errChan := make(chan error, maxConns)
+	errChan := make(chan int, maxConns)
 	for i := 0; i < maxConns; i++ {
 		go func(i int) {
 			defer wg.Done()
@@ -92,17 +101,36 @@ func testParallelRequest(url string, maxConns int) bool {
 				defer resp.Body.Close()
 			}
 
-			if err != nil || resp.StatusCode != http.StatusPartialContent {
-				fmt.Println(err)
-				errChan <- fmt.Errorf("fail")
+			if err != nil {
+				errChan <- 500 // generic server error
+				return
 			}
-			resp.Body.Close()
+
+			if resp.StatusCode == http.StatusTooManyRequests {
+				errChan <- 429
+				return
+			}
+
+			if resp.StatusCode != http.StatusPartialContent {
+				errChan <- resp.StatusCode
+				return
+			}
 		}(i)
 	}
 
 	wg.Wait()
 	close(errChan)
-	return len(errChan) == 0
+
+	for code := range errChan {
+		if code == 429 {
+			return false, true // failed due to rate limit
+		}
+		if code != 0 {
+			return false, false // failed for another reason
+		}
+	}
+
+	return true, false
 }
 
 func downloadPart(url string, output string, job DownloadJob, wg *sync.WaitGroup, tracker *ProgressTracker) {
@@ -193,6 +221,8 @@ func getStatsFallback(url string) FileStats {
 	defer resp.Body.Close()
 
 	fileSize, _ := strconv.Atoi(resp.Header.Get(contentLengthHeader))
+	fmt.Printf("Status code: %d\n", resp.StatusCode)
+
 	if resp.StatusCode != http.StatusPartialContent {
 		fmt.Println("Server does not support range requests. Using 1 thread for download")
 
@@ -220,6 +250,9 @@ func getStats(url string) FileStats {
 	maxParallelism := 1
 
 	resp, err := http.Head(url)
+	fileSize, _ = strconv.Atoi(resp.Header.Get(contentLengthHeader))
+	fmt.Println("HEAD Status code:", resp.StatusCode)
+
 	if err != nil || resp.StatusCode != http.StatusOK {
 		// check with a get request with range headers
 		return getStatsFallback(url)
@@ -237,8 +270,6 @@ func getStats(url string) FileStats {
 		isParallelSupported = true
 		maxParallelism = detectMaxConnections(url)
 	}
-
-	fileSize, _ = strconv.Atoi(resp.Header.Get(contentLengthHeader))
 
 	return FileStats{
 		fileSize:            fileSize,
