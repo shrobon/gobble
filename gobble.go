@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -50,9 +51,19 @@ func NewProgressTracker(totalSize int64) *ProgressTracker {
 	return pt
 }
 
+// Exponential backoff with jitter
+func backoff(attempt int) {
+	base := time.Duration(1<<attempt) * time.Second
+	jitter := time.Duration(rand.Intn(1000)) * time.Millisecond
+	sleep := base + jitter
+	fmt.Printf("⏳ Backing off for %v...\n", sleep)
+	time.Sleep(sleep)
+}
+
 func detectMaxConnections(url string) int {
 	low, high := 1, defaultParallelism
 	maxConns := 1
+	attempts := 1
 
 	for low <= high {
 		mid := low + (high-low)/2
@@ -62,10 +73,13 @@ func detectMaxConnections(url string) int {
 
 		if rateLimited {
 			fmt.Println("⚠️ Rate-limited (429). Backing off...")
-			time.Sleep(10 * time.Second)
+			backoff(attempts)
+			attempts++
 			high = mid - 1
 			continue
 		}
+
+		attempts = 1 // reset attempts on success or non-rate-limit failure
 
 		if ok {
 			maxConns = mid
