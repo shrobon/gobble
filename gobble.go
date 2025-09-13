@@ -179,34 +179,29 @@ func downloadPart(ctx context.Context, url string, output string, job DownloadJo
 
 	buf := make([]byte, 32*1024) // 32KB buffer
 	for {
-		select {
-		case <-ctx.Done():
-			return
-
-		default:
-			n, err := res.Body.Read(buf)
-			if n > 0 {
-				_, wErr := partFile.Write(buf[:n])
-				if wErr != nil {
-					fmt.Printf("Error writing to file: %v\n", wErr)
-					return
-				}
-				tracker.Add(int64(n))
-			}
-
-			if err == io.EOF {
-				break
-			}
-
-			if err != nil {
-				// Return without printing if the error is due to context cancellation
-				if ctx.Err() != nil {
-					return
-				}
-				fmt.Printf("Error reading from body: %v\n", err)
+		n, err := res.Body.Read(buf)
+		if n > 0 {
+			_, wErr := partFile.Write(buf[:n])
+			if wErr != nil {
+				fmt.Printf("Error writing to file: %v\n", wErr)
 				return
 			}
+			tracker.Add(int64(n))
 		}
+
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			// Return without printing if the error is due to context cancellation
+			if ctx.Err() != nil {
+				return
+			}
+			fmt.Printf("Error reading from body: %v\n", err)
+			return
+		}
+
 	}
 }
 
@@ -321,23 +316,14 @@ func prepareOutputFile(fileName string, fileSize int) {
 	out.Truncate(int64(fileSize))
 }
 
-func setupSignals(cancel context.CancelFunc) {
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigChan
-		fmt.Println("\n❗ Received interrupt. Exiting...")
-		cancel()
-	}()
-}
-
 func main() {
 	start := time.Now()
 
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	setupSignals(cancel)
 
 	link := flag.String("url", "", "URL to download")
 	filename := flag.String("o", "", "filename")
@@ -357,17 +343,30 @@ func main() {
 	stats := getStats(*link)
 	fmt.Printf("File size: %d MB, Parallelism: %d\n", stats.fileSize/1024/1024, stats.maxParallelism)
 	prepareOutputFile(downloadFile, stats.fileSize)
-
 	tracker := NewProgressTracker(int64(stats.fileSize))
-	download(ctx, *link, downloadFile, stats, tracker)
 
-	if ctx.Err() != nil {
-		fmt.Println("Download cancelled.")
-		os.Remove(downloadFile) // clean up partial file
+	doneChan := make(chan error, 1)
+	go func() {
+		doneChan <- download(ctx, *link, downloadFile, stats, tracker)
+	}()
+
+	select {
+	case err := <-doneChan:
+		if err != nil {
+			fmt.Printf("Download failed: %v\n", err)
+		} else {
+			duration := time.Since(start)
+			fmt.Printf("Total time taken %s\n", duration)
+		}
+
+	case <-sigChan:
+		fmt.Println("\n❗ Received interrupt. Exiting...")
+		cancel()
+
+		<-doneChan
+		fmt.Println("Download cancelled. Cleaning up partial file.")
+		os.Remove(downloadFile)
 		duration := time.Since(start)
 		fmt.Printf("Total time taken before interruption: %s\n", duration)
-	} else {
-		duration := time.Since(start)
-		fmt.Printf("Total time taken %s\n", duration)
 	}
 }
