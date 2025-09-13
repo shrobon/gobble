@@ -8,8 +8,10 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -21,7 +23,6 @@ const (
 )
 
 func closeFile(f *os.File) {
-	//fmt.Println("closing file handler...")
 	err := f.Close()
 
 	if err != nil {
@@ -147,21 +148,26 @@ func testParallelRequest(url string, maxConns int) (ok bool, rateLimited bool) {
 	return true, false
 }
 
-func downloadPart(url string, output string, job DownloadJob, wg *sync.WaitGroup, tracker *ProgressTracker) {
+func downloadPart(ctx context.Context, url string, output string, job DownloadJob, wg *sync.WaitGroup, tracker *ProgressTracker) {
 	defer wg.Done()
 
-	req, _ := http.NewRequest("GET", url, nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	req.Header.Set(rangeHeader, fmt.Sprintf("bytes=%d-%d", job.begin, job.end))
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			fmt.Printf("🚫 Part %d download canceled due to context cancellation.\n", job.part)
+			return
+		}
 		panic(err)
 	}
 	defer res.Body.Close()
 
 	partFile, err := os.OpenFile(output, os.O_WRONLY, 0666)
 	if err != nil {
-		panic(err)
+		fmt.Printf("Error opening file: %v\n", err)
+		return
 	}
 	defer closeFile(partFile)
 
@@ -173,27 +179,38 @@ func downloadPart(url string, output string, job DownloadJob, wg *sync.WaitGroup
 
 	buf := make([]byte, 32*1024) // 32KB buffer
 	for {
-		n, err := res.Body.Read(buf)
-		if n > 0 {
-			_, wErr := partFile.Write(buf[:n])
-			if wErr != nil {
-				panic(wErr)
+		select {
+		case <-ctx.Done():
+			return
+
+		default:
+			n, err := res.Body.Read(buf)
+			if n > 0 {
+				_, wErr := partFile.Write(buf[:n])
+				if wErr != nil {
+					fmt.Printf("Error writing to file: %v\n", wErr)
+					return
+				}
+				tracker.Add(int64(n))
 			}
-			tracker.Add(int64(n))
-		}
 
-		if err == io.EOF {
-			break
-		}
+			if err == io.EOF {
+				break
+			}
 
-		if err != nil {
-			panic(err)
+			if err != nil {
+				// Return without printing if the error is due to context cancellation
+				if ctx.Err() != nil {
+					return
+				}
+				fmt.Printf("Error reading from body: %v\n", err)
+				return
+			}
 		}
 	}
-	//fmt.Printf("Downloaded bytes %d-%d\n", job.begin, job.end)
 }
 
-func download(url string, output string, stats FileStats, tracker *ProgressTracker) error {
+func download(ctx context.Context, url string, output string, stats FileStats, tracker *ProgressTracker) error {
 
 	var jobs []DownloadJob
 	partSize := stats.fileSize / stats.maxParallelism
@@ -212,7 +229,7 @@ func download(url string, output string, stats FileStats, tracker *ProgressTrack
 	var wg sync.WaitGroup
 	for _, job := range jobs {
 		wg.Add(1)
-		go downloadPart(url, output, job, &wg, tracker)
+		go downloadPart(ctx, url, output, job, &wg, tracker)
 	}
 
 	wg.Wait()
@@ -304,8 +321,23 @@ func prepareOutputFile(fileName string, fileSize int) {
 	out.Truncate(int64(fileSize))
 }
 
+func setupSignals(cancel context.CancelFunc) {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\n❗ Received interrupt. Exiting...")
+		cancel()
+	}()
+}
+
 func main() {
 	start := time.Now()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	setupSignals(cancel)
 
 	link := flag.String("url", "", "URL to download")
 	filename := flag.String("o", "", "filename")
@@ -327,8 +359,15 @@ func main() {
 	prepareOutputFile(downloadFile, stats.fileSize)
 
 	tracker := NewProgressTracker(int64(stats.fileSize))
-	download(*link, downloadFile, stats, tracker)
+	download(ctx, *link, downloadFile, stats, tracker)
 
-	duration := time.Since(start)
-	fmt.Printf("Total time taken %s\n", duration)
+	if ctx.Err() != nil {
+		fmt.Println("Download cancelled.")
+		os.Remove(downloadFile) // clean up partial file
+		duration := time.Since(start)
+		fmt.Printf("Total time taken before interruption: %s\n", duration)
+	} else {
+		duration := time.Since(start)
+		fmt.Printf("Total time taken %s\n", duration)
+	}
 }
