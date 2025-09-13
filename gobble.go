@@ -7,7 +7,10 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -305,22 +308,37 @@ func prepareOutputFile(fileName string, fileSize int) {
 }
 
 func main() {
-	url := flag.String("url", "", "URL to download")
+	start := time.Now()
+
+	link := flag.String("url", "", "URL to download")
+	filename := flag.String("o", "", "filename")
 	flag.Parse()
 
-	if *url == "" {
+	if *link == "" {
 		fmt.Println("Please provide a URL with -url")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
-	start := time.Now()
-	stats := getStats(*url)
+	parsedUrl, err := url.Parse(*link)
+	if err != nil {
+		panic(err)
+	}
+
+	extractedFilename := path.Base(parsedUrl.Path)
+
+	if *filename == "" {
+		homeDir, _ := os.UserHomeDir()
+		*filename = filepath.Join(homeDir, "Downloads", "gobble", extractedFilename)
+		fmt.Printf("[INFO] No output file location provided. Using default location as %s\n", *filename)
+	}
+
+	stats := getStats(*link)
 	fmt.Printf("File size: %d MB, Parallelism: %d\n", stats.fileSize/1024/1024, stats.maxParallelism)
-	prepareOutputFile("downloaded_file", stats.fileSize)
+	prepareOutputFile(*filename, stats.fileSize)
 
 	tracker := NewProgressTracker(int64(stats.fileSize))
-	download(*url, "downloaded_file", stats, tracker)
+	download(*link, *filename, stats, tracker)
 
 	duration := time.Since(start)
 	fmt.Printf("Total time taken %s\n", duration)
