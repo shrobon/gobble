@@ -7,10 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
-	"net/url"
 	"os"
-	"path"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -320,25 +317,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	parsedUrl, err := url.Parse(*link)
+	downloadFile, err := buildDownloadPath(*filename, *link)
 	if err != nil {
 		panic(err)
 	}
 
-	extractedFilename := path.Base(parsedUrl.Path)
-
-	if *filename == "" {
-		homeDir, _ := os.UserHomeDir()
-		*filename = filepath.Join(homeDir, "Downloads", "gobble", extractedFilename)
-		fmt.Printf("[INFO] No output file location provided. Using default location as %s\n", *filename)
-	}
-
 	stats := getStats(*link)
 	fmt.Printf("File size: %d MB, Parallelism: %d\n", stats.fileSize/1024/1024, stats.maxParallelism)
-	prepareOutputFile(*filename, stats.fileSize)
+	prepareOutputFile(downloadFile, stats.fileSize)
 
 	tracker := NewProgressTracker(int64(stats.fileSize))
-	download(*link, *filename, stats, tracker)
+	download(*link, downloadFile, stats, tracker)
 
 	duration := time.Since(start)
 	fmt.Printf("Total time taken %s\n", duration)
