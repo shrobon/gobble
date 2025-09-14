@@ -38,7 +38,7 @@ changelog:
 brews:
   - name: gobble
     # GitHub repository where the formula will be published
-    tap:
+    repository:
       owner: shrobon
       name: homebrew-gobble
     # The project's homepage
