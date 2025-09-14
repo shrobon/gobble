@@ -1,0 +1,45 @@
+# .goreleaser.yml
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+brews:
+  - name: gobble
+    repository:
+      owner: shrobon
+      name: homebrew-gobble
+    homepage: "https://github.com/shrobon/gobble"
+    description: "A super-fast, easy-to-use file downloader written in Go"
+    license: "Apache-2.0"
+    test: |
+      system "#{bin}/gobble", "--help"
