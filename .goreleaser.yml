@@ -1,0 +1,51 @@
+# .goreleaser.yml
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+archives:
+  - replacements:
+      darwin: Darwin
+      linux: Linux
+      windows: Windows
+      amd64: x86_64
+checksum:
+  name_template: 'checksums.txt'
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+# Homebrew tap configuration
+brews:
+  -
+    # Name of the formula
+    name: gobble
+
+    # GitHub repository where the formula will be published
+    tap:
+      owner: shrobon
+      name: homebrew-gobble
+
+    # The project's homepage
+    homepage: "https://github.com/shrobon/gobble"
+
+    # A brief description of the project
+    description: "A super-fast, easy-to-use file downloader written in Go" # Customize this
+
+    # The license of the project
+    license: "Apache-2.0" # Change to your project's license
+
+    # The install block for the formula
+    install: |
+      bin.install "gobble"
